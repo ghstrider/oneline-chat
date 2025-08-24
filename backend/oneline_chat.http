@@ -1,0 +1,222 @@
+### Oneline Chat API Test Requests
+### Use with VS Code REST Client extension or similar HTTP client
+
+@baseUrl = http://localhost:8000
+@contentType = application/json
+
+### Health Check
+GET {{baseUrl}}/health
+Accept: application/json
+
+### Root Endpoint
+GET {{baseUrl}}/
+Accept: application/json
+
+### List Available Models
+GET {{baseUrl}}/api/v1/models
+Accept: application/json
+
+### Non-Streaming Chat Completion
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant."
+        },
+        {
+            "role": "user",
+            "content": "Hello! What is FastAPI?"
+        }
+    ],
+    "stream": false,
+    "temperature": 0.7,
+    "max_tokens": 150,
+    "chat_id": "test-chat-001",
+    "save_to_db": true
+}
+
+### Streaming Chat Completion (SSE)
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+Accept: text/event-stream
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Write a short poem about Python programming"
+        }
+    ],
+    "stream": true,
+    "temperature": 0.8,
+    "max_tokens": 200,
+    "chat_id": "test-stream-001",
+    "save_to_db": true
+}
+
+### Explicit Streaming Endpoint
+POST {{baseUrl}}/api/v1/chat/stream
+Content-Type: {{contentType}}
+Accept: text/event-stream
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Explain async programming in Python in 3 sentences"
+        }
+    ],
+    "temperature": 0.5,
+    "chat_id": "explicit-stream-001"
+}
+
+### Multi-turn Conversation
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are a Python expert."
+        },
+        {
+            "role": "user",
+            "content": "What is SQLModel?"
+        },
+        {
+            "role": "assistant",
+            "content": "SQLModel is a library for interacting with SQL databases from Python code, built on top of SQLAlchemy and Pydantic."
+        },
+        {
+            "role": "user",
+            "content": "How does it differ from SQLAlchemy?"
+        }
+    ],
+    "stream": false,
+    "temperature": 0.7,
+    "chat_id": "conversation-001",
+    "save_to_db": true
+}
+
+### Get Chat History
+GET {{baseUrl}}/api/v1/chat/history/test-chat-001
+Accept: application/json
+
+### Get Streaming Chat History
+GET {{baseUrl}}/api/v1/chat/history/test-stream-001
+Accept: application/json
+
+### Test with Custom Parameters
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Generate a JSON example of a user object"
+        }
+    ],
+    "stream": false,
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "frequency_penalty": 0.5,
+    "presence_penalty": 0.5,
+    "max_tokens": 100,
+    "chat_id": "json-example-001",
+    "save_to_db": true
+}
+
+### Test Error Handling - Missing Messages
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "stream": false
+}
+
+### Test Error Handling - Invalid Temperature
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Test"
+        }
+    ],
+    "temperature": 3.0
+}
+
+### Test Without Database Save
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "This should not be saved to database"
+        }
+    ],
+    "stream": false,
+    "save_to_db": false
+}
+
+### Performance Test - Long Response
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "deepseek-r1:8b",
+    "messages": [
+        {
+            "role": "user",
+            "content": "Explain the entire Python standard library"
+        }
+    ],
+    "stream": true,
+    "max_tokens": 1000,
+    "chat_id": "performance-test-001"
+}
+
+### OpenAI Compatibility Test
+POST {{baseUrl}}/api/v1/chat/completions
+Content-Type: {{contentType}}
+
+{
+    "model": "gpt-3.5-turbo",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant."
+        },
+        {
+            "role": "user",
+            "content": "Hello!"
+        }
+    ],
+    "stream": false,
+    "temperature": 1,
+    "top_p": 1,
+    "n": 1,
+    "stop": null,
+    "max_tokens": null,
+    "presence_penalty": 0,
+    "frequency_penalty": 0,
+    "logit_bias": null,
+    "user": "test-user"
+}
