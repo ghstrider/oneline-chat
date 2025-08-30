@@ -4,12 +4,14 @@ import MessageInput from './MessageInput'
 import ChatSettings from './ChatSettings'
 import { ChatMessage, ChatMode, ChatSettings as ChatSettingsType } from '../types/chat'
 import { streamChatMessageSSE, testConnection } from '../services/api'
+import { useChatHistory } from '../contexts/ChatHistoryContext'
 
 const ChatInterface = () => {
+  const { currentChat, currentChatId, createNewChat } = useChatHistory()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [mode, setMode] = useState<ChatMode>('single')
-  const [chatId] = useState(() => `chat-${Date.now()}`)
+  const [chatId, setChatId] = useState(() => `chat-${Date.now()}`)
   const [streamingContent, setStreamingContent] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settings, setSettings] = useState<ChatSettingsType>({
@@ -27,6 +29,41 @@ const ChatInterface = () => {
   useEffect(() => {
     scrollToBottom()
   }, [messages, streamingContent])
+
+  // Load messages when switching to a different chat (not on every refresh)
+  useEffect(() => {
+    if (currentChat && currentChatId && chatId !== currentChatId) {
+      // Only load if we're switching to a different chat
+      // Convert chat history messages to ChatMessage format
+      const historyMessages: ChatMessage[] = []
+      
+      currentChat.messages.forEach((msg) => {
+        // Add user message
+        if (msg.question) {
+          historyMessages.push({
+            id: `${msg.message_id}-user`,
+            role: 'user',
+            content: msg.question,
+            timestamp: new Date(msg.timestamp),
+          })
+        }
+        
+        // Add assistant message
+        if (msg.response) {
+          historyMessages.push({
+            id: `${msg.message_id}-assistant`,
+            role: 'assistant',
+            content: msg.response,
+            timestamp: new Date(msg.timestamp),
+          })
+        }
+      })
+      
+      setMessages(historyMessages)
+      setChatId(currentChatId)
+      setStreamingContent('')
+    }
+  }, [currentChat, currentChatId, chatId])
 
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || isLoading) return
@@ -122,6 +159,8 @@ const ChatInterface = () => {
   const handleClearChat = () => {
     setMessages([])
     setStreamingContent('')
+    createNewChat()
+    setChatId(`chat-${Date.now()}`)
   }
 
   const handleTestConnection = async () => {
@@ -154,6 +193,14 @@ const ChatInterface = () => {
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-4">
+              {currentChat && (
+                <>
+                  <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    {currentChat.chat_title}
+                  </h2>
+                  <span className="text-sm text-gray-500 dark:text-gray-400">•</span>
+                </>
+              )}
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                 Mode:
               </label>

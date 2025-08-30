@@ -162,13 +162,21 @@ export async function streamChatMessageSSE(
       payload: apiRequest
     })
 
+    // Get authentication token if available
+    const token = localStorage.getItem('sessionToken')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+    }
+    
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
     // Use fetch for SSE streaming (better browser support)
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-      },
+      headers,
       body: JSON.stringify(apiRequest),
     })
 
