@@ -93,6 +93,24 @@ class OnelineChat(SQLModel, table=True):
     user_id: Optional[str] = Field(default=None, nullable=True, description="User ID: integer for authenticated users, anon-xyz for anonymous")
 
 
+class SharedChat(SQLModel, table=True):
+    """Shared chat model for public chat sharing."""
+    
+    __tablename__ = "shared_chats"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    share_token: str = Field(unique=True, nullable=False, max_length=64, description="Unique token for accessing shared chat")
+    chat_id: str = Field(nullable=False, description="ID of the original chat")
+    owner_id: str = Field(nullable=False, description="ID of the user who shared the chat")
+    title: str = Field(nullable=False, max_length=200, description="Title for the shared chat")
+    description: Optional[str] = Field(default=None, max_length=500, description="Optional description")
+    is_public: bool = Field(default=True, description="Whether the chat is publicly accessible")
+    expires_at: Optional[datetime] = Field(default=None, description="Optional expiration date")
+    view_count: int = Field(default=0, description="Number of times the shared chat has been viewed")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="When the share was created")
+    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update time")
+
+
 class AgentMarketplace(SQLModel, table=True):
     """Agent marketplace model."""
     
@@ -151,4 +169,37 @@ class ChatHistoryResponse(BaseModel):
     chat_title: Optional[str]
     created_at: datetime
     updated_at: datetime
+    messages: List[Dict[str, Any]]
+
+
+class ShareSettings(BaseModel):
+    """Share settings for a chat."""
+    
+    title: str
+    description: Optional[str] = None
+    is_public: bool = True
+    expires_at: Optional[datetime] = None
+
+
+class ShareResponse(BaseModel):
+    """Response when sharing a chat."""
+    
+    share_token: str
+    share_url: str
+    title: str
+    is_public: bool
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+
+
+class SharedChatResponse(BaseModel):
+    """Response for accessing a shared chat."""
+    
+    share_token: str
+    chat_id: str
+    title: str
+    description: Optional[str]
+    is_public: bool
+    view_count: int
+    created_at: datetime
     messages: List[Dict[str, Any]]

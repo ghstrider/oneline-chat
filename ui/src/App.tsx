@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import ChatInterface from './components/ChatInterface'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ChatHistoryProvider } from './contexts/ChatHistoryContext'
@@ -6,6 +7,7 @@ import { UserProfile } from './components/auth/UserProfile'
 import { PrivateRoute } from './components/auth/PrivateRoute'
 import { AuthModal } from './components/auth/AuthModal'
 import { ChatHistoryPanel } from './components/chat-history/ChatHistoryPanel'
+import { SharedChatViewer } from './components/SharedChatViewer'
 
 function AppContent() {
   const [isDarkMode, setIsDarkMode] = useState(false)
@@ -57,28 +59,58 @@ function AppContent() {
           </div>
         </header>
 
-        {/* Main Content Area */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Sidebar - Desktop */}
-          {isAuthenticated && showChatHistory && (
-            <div className="hidden md:flex">
-              <ChatHistoryPanel
-                isOpen={true}
-                onClose={() => setShowChatHistory(false)}
-                isMobile={false}
-              />
-            </div>
-          )}
+        <Routes>
+          {/* Public shared chat viewer - no authentication required, full page */}
+          <Route path="/shared/:shareToken" element={<SharedChatViewer />} />
+          
+          {/* Private routes with sidebar and main content layout */}
+          <Route path="/" element={
+            <div className="flex flex-1 overflow-hidden">
+              {/* Sidebar - Desktop */}
+              {isAuthenticated && showChatHistory && (
+                <div className="hidden md:flex">
+                  <ChatHistoryPanel
+                    isOpen={true}
+                    onClose={() => setShowChatHistory(false)}
+                    isMobile={false}
+                  />
+                </div>
+              )}
 
-          {/* Main Content */}
-          <main className="flex-1 overflow-hidden">
-            <div className="h-full p-4 sm:p-6 lg:p-8">
-              <PrivateRoute>
-                <ChatInterface />
-              </PrivateRoute>
+              {/* Main Content */}
+              <main className="flex-1 overflow-hidden">
+                <div className="h-full p-4 sm:p-6 lg:p-8">
+                  <PrivateRoute>
+                    <ChatInterface />
+                  </PrivateRoute>
+                </div>
+              </main>
             </div>
-          </main>
-        </div>
+          } />
+          <Route path="/chat/:chatId" element={
+            <div className="flex flex-1 overflow-hidden">
+              {/* Sidebar - Desktop */}
+              {isAuthenticated && showChatHistory && (
+                <div className="hidden md:flex">
+                  <ChatHistoryPanel
+                    isOpen={true}
+                    onClose={() => setShowChatHistory(false)}
+                    isMobile={false}
+                  />
+                </div>
+              )}
+
+              {/* Main Content */}
+              <main className="flex-1 overflow-hidden">
+                <div className="h-full p-4 sm:p-6 lg:p-8">
+                  <PrivateRoute>
+                    <ChatInterface />
+                  </PrivateRoute>
+                </div>
+              </main>
+            </div>
+          } />
+        </Routes>
 
         {/* Sidebar - Mobile Overlay */}
         {isAuthenticated && showChatHistory && (
@@ -102,11 +134,13 @@ function AppContent() {
 
 function App() {
   return (
-    <AuthProvider>
-      <ChatHistoryProvider>
-        <AppContent />
-      </ChatHistoryProvider>
-    </AuthProvider>
+    <Router>
+      <AuthProvider>
+        <ChatHistoryProvider>
+          <AppContent />
+        </ChatHistoryProvider>
+      </AuthProvider>
+    </Router>
   )
 }
 
