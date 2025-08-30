@@ -132,8 +132,10 @@ class Application:
     def _register_routes(self, app: FastAPI):
         """Register all application routes."""
         from ..api import chat_router
+        from ..api.auth_router import router as auth_router
         
         # Include routers
+        app.include_router(auth_router)
         app.include_router(chat_router)
         
         # Root endpoint
@@ -145,10 +147,18 @@ class Application:
                 "version": self.settings.app.version,
                 "docs": "/docs",
                 "endpoints": {
-                    "chat_completion": "/api/v1/chat/completions",
-                    "streaming_chat": "/api/v1/chat/stream",
-                    "chat_history": "/api/v1/chat/history/{chat_id}",
-                    "models": "/api/v1/models"
+                    "auth": {
+                        "register": "/api/v1/auth/register",
+                        "login": "/api/v1/auth/login",
+                        "logout": "/api/v1/auth/logout",
+                        "profile": "/api/v1/auth/me"
+                    },
+                    "chat": {
+                        "completion": "/api/v1/chat/completions",
+                        "stream": "/api/v1/chat/stream",
+                        "history": "/api/v1/chat/history/{chat_id}",
+                        "models": "/api/v1/models"
+                    }
                 }
             }
         

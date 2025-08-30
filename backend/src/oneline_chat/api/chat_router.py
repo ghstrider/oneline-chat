@@ -16,6 +16,8 @@ from sqlmodel import Session
 from ..db import get_session, PersistenceRepository, ModeEnum
 from ..services import client, get_default_model, get_ai_provider
 from ..core.logging import get_logger
+from .auth_router import get_optional_user
+from ..db.models import User
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -87,7 +89,8 @@ class ChatCompletionChunk(BaseModel):
 
 async def generate_streaming_response(
     request: ChatCompletionRequest,
-    session: Session
+    session: Session,
+    current_user: Optional[User] = None
 ) -> AsyncGenerator[str, None]:
     """
     Generate streaming response compatible with OpenAI's SSE format.
@@ -166,7 +169,7 @@ async def generate_streaming_response(
                 user_messages = [msg for msg in request.messages if msg.role == "user"]
                 question = user_messages[-1].content if user_messages else ""
                 
-                repository.create_chat(
+                chat = repository.create_chat(
                     chat_id=request.chat_id or f"chat_{uuid.uuid4().hex[:8]}",
                     message_id=completion_id,
                     question=question,
@@ -174,6 +177,11 @@ async def generate_streaming_response(
                     mode=ModeEnum.single,
                     agents={"model": request.model, "streaming": True}
                 )
+                # Update chat with user_id if authenticated
+                if current_user:
+                    chat.user_id = current_user.id
+                    session.add(chat)
+                    session.commit()
             except Exception as db_error:
                 # Database save error - send error but don't break the stream
                 error_chunk = {
@@ -205,7 +213,8 @@ async def generate_streaming_response(
 @router.post("/chat/completions", response_model=None)
 async def create_chat_completion(
     request: ChatCompletionRequest,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
 ):
     """
     OpenAI-compatible chat completion endpoint with streaming support.
@@ -227,7 +236,7 @@ async def create_chat_completion(
     if request.stream:
         # Return streaming response
         return StreamingResponse(
-            generate_streaming_response(request, session),
+            generate_streaming_response(request, session, current_user),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -267,7 +276,7 @@ async def create_chat_completion(
                 # Get the assistant's response
                 response_content = completion.choices[0].message.content if completion.choices else ""
                 
-                repository.create_chat(
+                chat = repository.create_chat(
                     chat_id=request.chat_id or f"chat_{uuid.uuid4().hex[:8]}",
                     message_id=completion.id,
                     question=question,
@@ -275,6 +284,11 @@ async def create_chat_completion(
                     mode=ModeEnum.single,
                     agents={"model": request.model, "streaming": False}
                 )
+                # Update chat with user_id if authenticated
+                if current_user:
+                    chat.user_id = current_user.id
+                    session.add(chat)
+                    session.commit()
             
             # Convert to our response format
             response = ChatCompletionResponse(
@@ -335,13 +349,19 @@ async def create_streaming_chat(
 @router.get("/chat/history/{chat_id}")
 async def get_chat_history(
     chat_id: str,
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
 ) -> List[Dict[str, Any]]:
     """
     Get chat history for a specific chat_id.
+    If user is authenticated, only return their chats.
     """
     repository = PersistenceRepository(session)
     chats = repository.get_chat_by_id(chat_id)
+    
+    # Filter by user if authenticated
+    if current_user:
+        chats = [chat for chat in chats if chat.user_id == current_user.id]
     
     if not chats:
         raise HTTPException(

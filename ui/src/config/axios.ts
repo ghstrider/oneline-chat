@@ -14,6 +14,15 @@ export const apiClient = axios.create({
 // Request interceptor
 apiClient.interceptors.request.use(
   (config: AxiosRequestConfig) => {
+    // Add authentication token if available
+    const token = localStorage.getItem('sessionToken')
+    if (token) {
+      config.headers = {
+        ...config.headers,
+        'Authorization': `Bearer ${token}`
+      }
+    }
+    
     // Add timestamp to requests for debugging
     const timestamp = new Date().toISOString()
     console.log(`[API Request ${timestamp}]`, {
@@ -63,6 +72,13 @@ apiClient.interceptors.response.use(
           break
         case 401:
           error.message = 'Unauthorized: Please check your credentials'
+          // Clear invalid session
+          localStorage.removeItem('sessionToken')
+          localStorage.removeItem('sessionExpiry')
+          // Optionally redirect to login or reload page
+          if (!window.location.pathname.includes('/login')) {
+            window.location.reload()
+          }
           break
         case 403:
           error.message = 'Forbidden: You do not have permission'
@@ -98,4 +114,5 @@ apiClient.interceptors.response.use(
   }
 )
 
+export const api = apiClient
 export default apiClient
