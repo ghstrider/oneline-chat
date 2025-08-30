@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from typing import List, Optional
 from datetime import datetime
 
-from .models import OnelineChat, AgentMarketplace, AgentAccess, ModeEnum, AgentCommunicationProtocol, User, UserSession, ChatSummary, ChatHistoryResponse
+from .models import OnelineChat, AgentMarketplace, AgentAccess, ModeEnum, AgentCommunicationProtocol, User, UserSession, ChatSummary, ChatHistoryResponse, SharedChat, ShareSettings, ShareResponse, SharedChatResponse
 
 
 class PersistenceRepository:
@@ -358,6 +358,104 @@ class PersistenceRepository:
             updated_at=latest_message.updated_at,
             model_used=model_used
         )
+    
+    # Shared Chat operations
+    def create_shared_chat(
+        self, 
+        share_token: str,
+        chat_id: str, 
+        owner_id: str, 
+        settings: ShareSettings
+    ) -> SharedChat:
+        """Create a new shared chat."""
+        shared_chat = SharedChat(
+            share_token=share_token,
+            chat_id=chat_id,
+            owner_id=owner_id,
+            title=settings.title,
+            description=settings.description,
+            is_public=settings.is_public,
+            expires_at=settings.expires_at,
+            view_count=0,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        self.session.add(shared_chat)
+        self.session.commit()
+        self.session.refresh(shared_chat)
+        return shared_chat
+    
+    def get_shared_chat_by_token(self, share_token: str) -> Optional[SharedChat]:
+        """Get a shared chat by its share token."""
+        statement = select(SharedChat).where(
+            SharedChat.share_token == share_token,
+            SharedChat.is_public == True
+        )
+        # Check if not expired
+        now = datetime.utcnow()
+        statement = statement.where(
+            (SharedChat.expires_at.is_(None)) | (SharedChat.expires_at > now)
+        )
+        result = self.session.exec(statement)
+        return result.first()
+    
+    def get_shared_chat_by_chat_id(self, chat_id: str, owner_id: str) -> Optional[SharedChat]:
+        """Get shared chat info by chat_id and owner."""
+        statement = select(SharedChat).where(
+            SharedChat.chat_id == chat_id,
+            SharedChat.owner_id == owner_id
+        )
+        result = self.session.exec(statement)
+        return result.first()
+    
+    def increment_view_count(self, share_token: str) -> bool:
+        """Increment view count for a shared chat."""
+        statement = select(SharedChat).where(SharedChat.share_token == share_token)
+        shared_chat = self.session.exec(statement).first()
+        if shared_chat:
+            shared_chat.view_count += 1
+            shared_chat.updated_at = datetime.utcnow()
+            self.session.add(shared_chat)
+            self.session.commit()
+            return True
+        return False
+    
+    def delete_shared_chat(self, chat_id: str, owner_id: str) -> bool:
+        """Delete/unshare a chat."""
+        statement = select(SharedChat).where(
+            SharedChat.chat_id == chat_id,
+            SharedChat.owner_id == owner_id
+        )
+        shared_chat = self.session.exec(statement).first()
+        if shared_chat:
+            self.session.delete(shared_chat)
+            self.session.commit()
+            return True
+        return False
+    
+    def update_shared_chat(
+        self, 
+        chat_id: str, 
+        owner_id: str, 
+        settings: ShareSettings
+    ) -> Optional[SharedChat]:
+        """Update shared chat settings."""
+        statement = select(SharedChat).where(
+            SharedChat.chat_id == chat_id,
+            SharedChat.owner_id == owner_id
+        )
+        shared_chat = self.session.exec(statement).first()
+        if shared_chat:
+            shared_chat.title = settings.title
+            shared_chat.description = settings.description
+            shared_chat.is_public = settings.is_public
+            shared_chat.expires_at = settings.expires_at
+            shared_chat.updated_at = datetime.utcnow()
+            self.session.add(shared_chat)
+            self.session.commit()
+            self.session.refresh(shared_chat)
+            return shared_chat
+        return None
 
 
 class UserRepository:

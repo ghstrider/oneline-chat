@@ -11,13 +11,14 @@ import json
 import asyncio
 import uuid
 import time
+import secrets
 from sqlmodel import Session
 
 from ..db import get_session, PersistenceRepository, ModeEnum
 from ..services import client, get_default_model, get_ai_provider
 from ..core.logging import get_logger
 from .auth_router import get_optional_user
-from ..db.models import User, ChatSummary, ChatHistoryResponse
+from ..db.models import User, ChatSummary, ChatHistoryResponse, ShareSettings, ShareResponse, SharedChatResponse
 from ..core.anonymous_session import get_user_identifier
 
 logger = get_logger(__name__)
@@ -559,3 +560,253 @@ async def get_chat_summary(
         )
     
     return summary
+
+
+# Share endpoints
+@router.post("/chat/{chat_id}/share", response_model=ShareResponse)
+async def share_chat(
+    chat_id: str,
+    settings: ShareSettings,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Share a chat publicly with custom settings.
+    Only the chat owner can share their chat.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Must be authenticated to share
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to share chats"
+        )
+    
+    # Verify the user owns this chat
+    user_id = str(current_user.id)
+    chat_messages = repository.get_chat_by_id(chat_id)
+    
+    if not chat_messages:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found"
+        )
+    
+    # Check if any message belongs to the user
+    user_owns_chat = any(msg.user_id == user_id for msg in chat_messages)
+    if not user_owns_chat:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only share your own chats"
+        )
+    
+    # Check if already shared
+    existing_share = repository.get_shared_chat_by_chat_id(chat_id, user_id)
+    if existing_share:
+        # Update existing share
+        updated_share = repository.update_shared_chat(chat_id, user_id, settings)
+        if not updated_share:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update share settings"
+            )
+        
+        # Generate share URL
+        base_url = str(request.base_url).rstrip('/')
+        share_url = f"{base_url}/shared/{updated_share.share_token}"
+        
+        return ShareResponse(
+            share_token=updated_share.share_token,
+            share_url=share_url,
+            title=updated_share.title,
+            is_public=updated_share.is_public,
+            expires_at=updated_share.expires_at,
+            created_at=updated_share.created_at
+        )
+    
+    # Generate secure share token
+    share_token = secrets.token_urlsafe(32)
+    
+    # Create new shared chat
+    shared_chat = repository.create_shared_chat(share_token, chat_id, user_id, settings)
+    
+    # Generate share URL
+    base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/shared/{share_token}"
+    
+    return ShareResponse(
+        share_token=share_token,
+        share_url=share_url,
+        title=shared_chat.title,
+        is_public=shared_chat.is_public,
+        expires_at=shared_chat.expires_at,
+        created_at=shared_chat.created_at
+    )
+
+
+@router.get("/shared/{share_token}", response_model=SharedChatResponse)
+async def get_shared_chat(
+    share_token: str,
+    session: Session = Depends(get_session)
+):
+    """
+    Get a shared chat by its token.
+    Public endpoint - no authentication required.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Get shared chat info
+    shared_chat = repository.get_shared_chat_by_token(share_token)
+    if not shared_chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shared chat not found or has expired"
+        )
+    
+    # Get chat messages
+    chat_messages = repository.get_chat_by_id(shared_chat.chat_id)
+    if not chat_messages:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Original chat not found"
+        )
+    
+    # Increment view count
+    repository.increment_view_count(share_token)
+    
+    # Format messages
+    formatted_messages = []
+    for msg in chat_messages:
+        if not msg.is_deleted:  # Only include non-deleted messages
+            formatted_messages.append({
+                "message_id": msg.message_id,
+                "question": msg.question,
+                "response": msg.response,
+                "timestamp": msg.msg_timestamp.isoformat(),
+                "mode": msg.mode.value,
+                "agents": msg.agents
+            })
+    
+    # Sort by timestamp
+    formatted_messages.sort(key=lambda x: x["timestamp"])
+    
+    return SharedChatResponse(
+        share_token=share_token,
+        chat_id=shared_chat.chat_id,
+        title=shared_chat.title,
+        description=shared_chat.description,
+        is_public=shared_chat.is_public,
+        view_count=shared_chat.view_count,
+        created_at=shared_chat.created_at,
+        messages=formatted_messages
+    )
+
+
+@router.delete("/chat/{chat_id}/share")
+async def unshare_chat(
+    chat_id: str,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Remove sharing for a chat (make it private again).
+    Only the chat owner can unshare their chat.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Must be authenticated to unshare
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required to unshare chats"
+        )
+    
+    user_id = str(current_user.id)
+    
+    # Verify the user owns this chat
+    chat_messages = repository.get_chat_by_id(chat_id)
+    if not chat_messages:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found"
+        )
+    
+    # Check if any message belongs to the user
+    user_owns_chat = any(msg.user_id == user_id for msg in chat_messages)
+    if not user_owns_chat:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only unshare your own chats"
+        )
+    
+    # Delete the share
+    success = repository.delete_shared_chat(chat_id, user_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat is not currently shared"
+        )
+    
+    return {"message": "Chat unshared successfully"}
+
+
+@router.get("/chat/{chat_id}/share", response_model=ShareResponse)
+async def get_chat_share_info(
+    chat_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Get share information for a chat if it's currently shared.
+    Only the chat owner can view share info.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Must be authenticated
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+    
+    user_id = str(current_user.id)
+    
+    # Verify the user owns this chat
+    chat_messages = repository.get_chat_by_id(chat_id)
+    if not chat_messages:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat not found"
+        )
+    
+    # Check if any message belongs to the user
+    user_owns_chat = any(msg.user_id == user_id for msg in chat_messages)
+    if not user_owns_chat:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view share info for your own chats"
+        )
+    
+    # Get share info
+    shared_chat = repository.get_shared_chat_by_chat_id(chat_id, user_id)
+    if not shared_chat:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat is not currently shared"
+        )
+    
+    # Generate share URL
+    base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/shared/{shared_chat.share_token}"
+    
+    return ShareResponse(
+        share_token=shared_chat.share_token,
+        share_url=share_url,
+        title=shared_chat.title,
+        is_public=shared_chat.is_public,
+        expires_at=shared_chat.expires_at,
+        created_at=shared_chat.created_at
+    )

@@ -1,19 +1,25 @@
 import { useState, useRef, useEffect } from 'react'
+import { useParams } from 'react-router-dom'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
 import ChatSettings from './ChatSettings'
+import { ShareModal } from './ShareModal'
 import { ChatMessage, ChatMode, ChatSettings as ChatSettingsType } from '../types/chat'
 import { streamChatMessageSSE, testConnection } from '../services/api'
 import { useChatHistory } from '../contexts/ChatHistoryContext'
+import { useAuth } from '../contexts/AuthContext'
 
 const ChatInterface = () => {
-  const { currentChat, currentChatId, createNewChat } = useChatHistory()
+  const { chatId: urlChatId } = useParams<{ chatId?: string }>()
+  const { currentChat, currentChatId, createNewChat, loadChat } = useChatHistory()
+  const { isAuthenticated } = useAuth()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [mode, setMode] = useState<ChatMode>('single')
   const [chatId, setChatId] = useState(() => `chat-${Date.now()}`)
   const [streamingContent, setStreamingContent] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [shareModalOpen, setShareModalOpen] = useState(false)
   const [settings, setSettings] = useState<ChatSettingsType>({
     model: 'deepseek-r1:8b',
     temperature: 0.8,
@@ -29,6 +35,13 @@ const ChatInterface = () => {
   useEffect(() => {
     scrollToBottom()
   }, [messages, streamingContent])
+
+  // Load chat from URL parameter
+  useEffect(() => {
+    if (urlChatId && urlChatId !== currentChatId) {
+      loadChat(urlChatId)
+    }
+  }, [urlChatId, currentChatId, loadChat])
 
   // Load messages when switching to a different chat (not on every refresh)
   useEffect(() => {
@@ -240,6 +253,22 @@ const ChatInterface = () => {
                 />
               </div>
               
+              {/* Share Button - only show if authenticated and there are messages */}
+              {isAuthenticated && messages.length > 0 && (
+                <button
+                  onClick={() => setShareModalOpen(true)}
+                  className="px-3 py-1 text-xs font-medium text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 border border-blue-300 dark:border-blue-600 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+                  title="Share this chat"
+                >
+                  <div className="flex items-center space-x-1">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+                    </svg>
+                    <span>Share</span>
+                  </div>
+                </button>
+              )}
+              
               <button
                 onClick={handleClearChat}
                 className="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors"
@@ -275,6 +304,14 @@ const ChatInterface = () => {
           />
         </div>
       </div>
+      
+      {/* Share Modal */}
+      <ShareModal
+        isOpen={shareModalOpen}
+        onClose={() => setShareModalOpen(false)}
+        chatId={currentChatId || chatId}
+        chatTitle={currentChat?.chat_title || 'Untitled Chat'}
+      />
     </div>
   )
 }
