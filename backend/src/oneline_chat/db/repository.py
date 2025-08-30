@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from typing import List, Optional
 from datetime import datetime
 
-from .models import OnelineChat, AgentMarketplace, AgentAccess, ModeEnum, AgentCommunicationProtocol, User, UserSession
+from .models import OnelineChat, AgentMarketplace, AgentAccess, ModeEnum, AgentCommunicationProtocol, User, UserSession, ChatSummary, ChatHistoryResponse
 
 
 class PersistenceRepository:
@@ -23,9 +23,17 @@ class PersistenceRepository:
         question: str,
         response: str,
         mode: ModeEnum,
-        agents: Optional[dict] = None
+        agents: Optional[dict] = None,
+        chat_title: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> OnelineChat:
         """Create a new chat message record."""
+        now = datetime.utcnow()
+        
+        # Auto-generate title from question if not provided
+        if not chat_title and question:
+            chat_title = question[:50] + "..." if len(question) > 50 else question
+        
         chat = OnelineChat(
             chat_id=chat_id,
             message_id=message_id,
@@ -33,7 +41,11 @@ class PersistenceRepository:
             response=response,
             mode=mode,
             agents=agents,
-            msg_timestamp=datetime.utcnow()
+            msg_timestamp=now,
+            chat_title=chat_title,
+            user_id=user_id,
+            created_at=now,
+            updated_at=now
         )
         self.session.add(chat)
         self.session.commit()
@@ -128,6 +140,224 @@ class PersistenceRepository:
             self.session.commit()
             return True
         return False
+    
+    # Chat History operations
+    def get_all_chats(
+        self, 
+        user_id: Optional[str] = None, 
+        limit: int = 50, 
+        offset: int = 0,
+        search_query: Optional[str] = None
+    ) -> List[ChatSummary]:
+        """Get all chat sessions with summary information."""
+        # Base query to get unique chat sessions
+        base_query = select(OnelineChat.chat_id).distinct()
+        
+        # Add user filter if provided
+        if user_id:
+            base_query = base_query.where(OnelineChat.user_id == user_id)
+        
+        # Add soft delete filter
+        base_query = base_query.where(OnelineChat.is_deleted == False)
+        
+        # Add search filter if provided
+        if search_query:
+            base_query = base_query.where(
+                OnelineChat.question.ilike(f"%{search_query}%") |
+                OnelineChat.response.ilike(f"%{search_query}%") |
+                OnelineChat.chat_title.ilike(f"%{search_query}%")
+            )
+        
+        # Get unique chat_ids
+        chat_ids_result = self.session.exec(base_query.limit(limit).offset(offset))
+        chat_ids = chat_ids_result.all()
+        
+        chat_summaries = []
+        
+        for chat_id in chat_ids:
+            # Get chat summary data
+            summary_query = select(
+                OnelineChat.chat_id,
+                OnelineChat.chat_title,
+                OnelineChat.created_at,
+                OnelineChat.updated_at,
+                OnelineChat.question,
+                OnelineChat.agents
+            ).where(
+                OnelineChat.chat_id == chat_id,
+                OnelineChat.is_deleted == False
+            ).order_by(OnelineChat.msg_timestamp.desc()).limit(1)
+            
+            latest_message = self.session.exec(summary_query).first()
+            
+            if latest_message:
+                # Count messages in this chat
+                count_query = select(OnelineChat).where(
+                    OnelineChat.chat_id == chat_id,
+                    OnelineChat.is_deleted == False
+                )
+                message_count = len(self.session.exec(count_query).all())
+                
+                # Get model used from agents data
+                model_used = None
+                if latest_message.agents and isinstance(latest_message.agents, dict):
+                    model_used = latest_message.agents.get('model')
+                
+                # Create preview from question (truncate if too long)
+                preview = latest_message.question
+                if len(preview) > 100:
+                    preview = preview[:97] + "..."
+                
+                chat_summaries.append(ChatSummary(
+                    chat_id=latest_message.chat_id,
+                    chat_title=latest_message.chat_title or preview,
+                    last_message_preview=preview,
+                    message_count=message_count,
+                    created_at=latest_message.created_at,
+                    updated_at=latest_message.updated_at,
+                    model_used=model_used
+                ))
+        
+        # Sort by updated_at descending
+        chat_summaries.sort(key=lambda x: x.updated_at, reverse=True)
+        
+        return chat_summaries
+    
+    def get_chat_history_with_messages(self, chat_id: str, user_id: Optional[str] = None) -> Optional[ChatHistoryResponse]:
+        """Get full chat history with all messages."""
+        # Build query
+        query = select(OnelineChat).where(
+            OnelineChat.chat_id == chat_id,
+            OnelineChat.is_deleted == False
+        )
+        
+        # Add user filter if provided
+        if user_id:
+            query = query.where(OnelineChat.user_id == user_id)
+        
+        query = query.order_by(OnelineChat.msg_timestamp.asc())
+        
+        messages = self.session.exec(query).all()
+        
+        if not messages:
+            return None
+        
+        # Format messages
+        formatted_messages = []
+        for msg in messages:
+            formatted_messages.append({
+                "message_id": msg.message_id,
+                "question": msg.question,
+                "response": msg.response,
+                "timestamp": msg.msg_timestamp.isoformat(),
+                "mode": msg.mode.value,
+                "agents": msg.agents
+            })
+        
+        return ChatHistoryResponse(
+            chat_id=chat_id,
+            chat_title=messages[0].chat_title,
+            created_at=messages[0].created_at,
+            updated_at=messages[-1].updated_at,
+            messages=formatted_messages
+        )
+    
+    def delete_chat(self, chat_id: str, user_id: Optional[str] = None) -> bool:
+        """Soft delete a chat session."""
+        # Build query
+        query = select(OnelineChat).where(OnelineChat.chat_id == chat_id)
+        
+        # Add user filter if provided
+        if user_id:
+            query = query.where(OnelineChat.user_id == user_id)
+        
+        messages = self.session.exec(query).all()
+        
+        if not messages:
+            return False
+        
+        # Mark all messages in the chat as deleted
+        for message in messages:
+            message.is_deleted = True
+            self.session.add(message)
+        
+        self.session.commit()
+        return True
+    
+    def update_chat_title(self, chat_id: str, title: str, user_id: Optional[str] = None) -> bool:
+        """Update chat title for all messages in a chat session."""
+        # Build query
+        query = select(OnelineChat).where(
+            OnelineChat.chat_id == chat_id,
+            OnelineChat.is_deleted == False
+        )
+        
+        # Add user filter if provided
+        if user_id:
+            query = query.where(OnelineChat.user_id == user_id)
+        
+        messages = self.session.exec(query).all()
+        
+        if not messages:
+            return False
+        
+        # Update title for all messages in the chat
+        for message in messages:
+            message.chat_title = title
+            message.updated_at = datetime.utcnow()
+            self.session.add(message)
+        
+        self.session.commit()
+        return True
+    
+    def get_chat_summary(self, chat_id: str, user_id: Optional[str] = None) -> Optional[ChatSummary]:
+        """Get summary information for a specific chat."""
+        # Build query for latest message
+        query = select(OnelineChat).where(
+            OnelineChat.chat_id == chat_id,
+            OnelineChat.is_deleted == False
+        )
+        
+        # Add user filter if provided
+        if user_id:
+            query = query.where(OnelineChat.user_id == user_id)
+        
+        query = query.order_by(OnelineChat.msg_timestamp.desc()).limit(1)
+        
+        latest_message = self.session.exec(query).first()
+        
+        if not latest_message:
+            return None
+        
+        # Count messages in this chat
+        count_query = select(OnelineChat).where(
+            OnelineChat.chat_id == chat_id,
+            OnelineChat.is_deleted == False
+        )
+        if user_id:
+            count_query = count_query.where(OnelineChat.user_id == user_id)
+        
+        message_count = len(self.session.exec(count_query).all())
+        
+        # Get model used from agents data
+        model_used = None
+        if latest_message.agents and isinstance(latest_message.agents, dict):
+            model_used = latest_message.agents.get('model')
+        
+        # Create preview from question
+        preview = latest_message.question
+        if len(preview) > 100:
+            preview = preview[:97] + "..."
+        
+        return ChatSummary(
+            chat_id=latest_message.chat_id,
+            chat_title=latest_message.chat_title or preview,
+            last_message_preview=preview,
+            message_count=message_count,
+            created_at=latest_message.created_at,
+            updated_at=latest_message.updated_at,
+            model_used=model_used
+        )
 
 
 class UserRepository:

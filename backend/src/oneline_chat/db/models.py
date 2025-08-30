@@ -6,6 +6,7 @@ from sqlmodel import Field, SQLModel, Relationship, Column, JSON
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 from enum import Enum
+from pydantic import BaseModel
 
 
 class ModeEnum(str, Enum):
@@ -35,7 +36,6 @@ class User(SQLModel, table=True):
     last_login: Optional[datetime] = Field(default=None)
     
     # Relationships
-    chats: List["OnelineChat"] = Relationship(back_populates="user")
     sessions: List["UserSession"] = Relationship(back_populates="user")
 
 
@@ -77,9 +77,20 @@ class OnelineChat(SQLModel, table=True):
         description="Agent configuration and metadata"
     )
     
-    # User relationship
-    user_id: Optional[int] = Field(default=None, foreign_key="users.id", nullable=True)
-    user: Optional[User] = Relationship(back_populates="chats")
+    # Chat metadata fields
+    chat_title: Optional[str] = Field(default=None, max_length=255, description="User-friendly chat name")
+    created_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="Chat creation time"
+    )
+    updated_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="Last message time"
+    )
+    is_deleted: bool = Field(default=False, description="Soft delete flag")
+    
+    # User relationship - supports both int (authenticated) and str (anonymous) 
+    user_id: Optional[str] = Field(default=None, nullable=True, description="User ID: integer for authenticated users, anon-xyz for anonymous")
 
 
 class AgentMarketplace(SQLModel, table=True):
@@ -118,3 +129,26 @@ class AgentAccess(SQLModel, table=True):
     )
     
     agent: Optional[AgentMarketplace] = Relationship(back_populates="agent_accesses")
+
+
+# Response models for API
+class ChatSummary(BaseModel):
+    """Chat summary for chat history list."""
+    
+    chat_id: str
+    chat_title: Optional[str]
+    last_message_preview: str
+    message_count: int
+    created_at: datetime
+    updated_at: datetime
+    model_used: Optional[str] = None
+
+
+class ChatHistoryResponse(BaseModel):
+    """Chat history with messages."""
+    
+    chat_id: str
+    chat_title: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    messages: List[Dict[str, Any]]

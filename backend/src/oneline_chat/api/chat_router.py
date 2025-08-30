@@ -2,7 +2,7 @@
 Chat router with OpenAI-compatible streaming endpoint.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, AsyncGenerator, Union, Literal
@@ -17,7 +17,8 @@ from ..db import get_session, PersistenceRepository, ModeEnum
 from ..services import client, get_default_model, get_ai_provider
 from ..core.logging import get_logger
 from .auth_router import get_optional_user
-from ..db.models import User
+from ..db.models import User, ChatSummary, ChatHistoryResponse
+from ..core.anonymous_session import get_user_identifier
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["chat"])
@@ -90,6 +91,8 @@ class ChatCompletionChunk(BaseModel):
 async def generate_streaming_response(
     request: ChatCompletionRequest,
     session: Session,
+    http_request: Request,
+    http_response: Response,
     current_user: Optional[User] = None
 ) -> AsyncGenerator[str, None]:
     """
@@ -169,19 +172,18 @@ async def generate_streaming_response(
                 user_messages = [msg for msg in request.messages if msg.role == "user"]
                 question = user_messages[-1].content if user_messages else ""
                 
+                # Get user identifier (authenticated user ID or anonymous session)
+                user_identifier = get_user_identifier(current_user, http_request, http_response)
+                
                 chat = repository.create_chat(
                     chat_id=request.chat_id or f"chat_{uuid.uuid4().hex[:8]}",
                     message_id=completion_id,
                     question=question,
                     response=full_response,
                     mode=ModeEnum.single,
-                    agents={"model": request.model, "streaming": True}
+                    agents={"model": request.model, "streaming": True},
+                    user_id=user_identifier
                 )
-                # Update chat with user_id if authenticated
-                if current_user:
-                    chat.user_id = current_user.id
-                    session.add(chat)
-                    session.commit()
             except Exception as db_error:
                 # Database save error - send error but don't break the stream
                 error_chunk = {
@@ -213,6 +215,8 @@ async def generate_streaming_response(
 @router.post("/chat/completions", response_model=None)
 async def create_chat_completion(
     request: ChatCompletionRequest,
+    http_request: Request,
+    http_response: Response,
     session: Session = Depends(get_session),
     current_user: Optional[User] = Depends(get_optional_user)
 ):
@@ -236,7 +240,7 @@ async def create_chat_completion(
     if request.stream:
         # Return streaming response
         return StreamingResponse(
-            generate_streaming_response(request, session, current_user),
+            generate_streaming_response(request, session, http_request, http_response, current_user),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -276,19 +280,18 @@ async def create_chat_completion(
                 # Get the assistant's response
                 response_content = completion.choices[0].message.content if completion.choices else ""
                 
+                # Get user identifier (authenticated user ID or anonymous session)
+                user_identifier = get_user_identifier(current_user, http_request, http_response)
+                
                 chat = repository.create_chat(
                     chat_id=request.chat_id or f"chat_{uuid.uuid4().hex[:8]}",
                     message_id=completion.id,
                     question=question,
                     response=response_content,
                     mode=ModeEnum.single,
-                    agents={"model": request.model, "streaming": False}
+                    agents={"model": request.model, "streaming": False},
+                    user_id=user_identifier
                 )
-                # Update chat with user_id if authenticated
-                if current_user:
-                    chat.user_id = current_user.id
-                    session.add(chat)
-                    session.commit()
             
             # Convert to our response format
             response = ChatCompletionResponse(
@@ -327,7 +330,10 @@ async def create_chat_completion(
 @router.post("/chat/stream")
 async def create_streaming_chat(
     request: ChatCompletionRequest,
-    session: Session = Depends(get_session)
+    http_request: Request,
+    http_response: Response,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
 ) -> StreamingResponse:
     """
     Explicit streaming endpoint that always returns SSE stream.
@@ -336,7 +342,7 @@ async def create_streaming_chat(
     """
     request.stream = True
     return StreamingResponse(
-        generate_streaming_response(request, session),
+        generate_streaming_response(request, session, http_request, http_response, current_user),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -419,3 +425,137 @@ async def list_models() -> Dict[str, Any]:
             }
         ]
     }
+
+
+# Chat History Management endpoints
+class ChatTitleUpdate(BaseModel):
+    """Model for updating chat title."""
+    title: str = Field(..., min_length=1, max_length=255)
+
+
+@router.get("/chats", response_model=List[ChatSummary])
+async def get_all_chats(
+    limit: int = 50,
+    offset: int = 0,
+    search: Optional[str] = None,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Get all chat sessions for the current user.
+    Supports pagination and search functionality.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Get user_id if authenticated, otherwise None for anonymous chats
+    user_id = str(current_user.id) if current_user else None
+    
+    chats = repository.get_all_chats(
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+        search_query=search
+    )
+    
+    return chats
+
+
+@router.get("/chat/{chat_id}/full", response_model=ChatHistoryResponse)
+async def get_full_chat_history(
+    chat_id: str,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Get full chat history with all messages for a specific chat.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Get user_id if authenticated, otherwise None for anonymous chats
+    user_id = str(current_user.id) if current_user else None
+    
+    chat_history = repository.get_chat_history_with_messages(chat_id, user_id)
+    
+    if not chat_history:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chat history not found for chat_id: {chat_id}"
+        )
+    
+    return chat_history
+
+
+@router.delete("/chat/{chat_id}")
+async def delete_chat_history(
+    chat_id: str,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Delete (soft delete) a chat session and all its messages.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Get user_id if authenticated, otherwise None for anonymous chats
+    user_id = str(current_user.id) if current_user else None
+    
+    success = repository.delete_chat(chat_id, user_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chat not found for chat_id: {chat_id}"
+        )
+    
+    return {"message": f"Chat {chat_id} deleted successfully"}
+
+
+@router.put("/chat/{chat_id}/title")
+async def update_chat_title(
+    chat_id: str,
+    title_update: ChatTitleUpdate,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Update the title of a chat session.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Get user_id if authenticated, otherwise None for anonymous chats
+    user_id = str(current_user.id) if current_user else None
+    
+    success = repository.update_chat_title(chat_id, title_update.title, user_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chat not found for chat_id: {chat_id}"
+        )
+    
+    return {"message": f"Chat title updated successfully", "title": title_update.title}
+
+
+@router.get("/chat/{chat_id}/summary", response_model=ChatSummary)
+async def get_chat_summary(
+    chat_id: str,
+    session: Session = Depends(get_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+):
+    """
+    Get summary information for a specific chat.
+    """
+    repository = PersistenceRepository(session)
+    
+    # Get user_id if authenticated, otherwise None for anonymous chats
+    user_id = str(current_user.id) if current_user else None
+    
+    summary = repository.get_chat_summary(chat_id, user_id)
+    
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chat not found for chat_id: {chat_id}"
+        )
+    
+    return summary
