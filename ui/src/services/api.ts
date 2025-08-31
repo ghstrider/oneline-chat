@@ -2,8 +2,8 @@ import { ChatRequest, ChatResponse, ApiChatRequest } from '../types/chat'
 import { API_CONFIG } from '../config/api'
 import apiClient from '../config/axios'
 
-export async function sendChatMessage(request: ChatRequest): Promise<ChatResponse> {
-  const apiRequest: ApiChatRequest = {
+export async function sendChatMessage(request: ChatRequest & { agentId?: string }): Promise<ChatResponse> {
+  const apiRequest: ApiChatRequest & { agent_id?: string } = {
     model: request.model || 'deepseek-r1:8b',
     messages: [
       {
@@ -16,6 +16,7 @@ export async function sendChatMessage(request: ChatRequest): Promise<ChatRespons
     max_tokens: request.maxTokens || 200,
     chat_id: request.chatId,
     save_to_db: request.saveToDb ?? true,
+    agent_id: request.agentId,
   }
 
   console.log('🚀 Sending chat request:', {
@@ -41,7 +42,7 @@ export async function sendChatMessage(request: ChatRequest): Promise<ChatRespons
 }
 
 export async function streamChatMessage(
-  request: ChatRequest,
+  request: ChatRequest & { agentId?: string },
   onChunk: (chunk: string) => void,
   onComplete?: () => void,
   onError?: (error: Error) => void
@@ -49,7 +50,7 @@ export async function streamChatMessage(
   let fullContent = ''
   
   try {
-    const apiRequest: ApiChatRequest = {
+    const apiRequest: ApiChatRequest & { agent_id?: string } = {
       model: request.model || 'deepseek-r1:8b',
       messages: [
         {
@@ -62,6 +63,7 @@ export async function streamChatMessage(
       max_tokens: request.maxTokens || 200,
       chat_id: request.chatId,
       save_to_db: request.saveToDb ?? true,
+      agent_id: request.agentId,
     }
 
     console.log('🚀 Starting stream request:', {

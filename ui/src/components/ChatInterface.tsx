@@ -301,6 +301,7 @@ const ChatInterface = () => {
           <MessageInput
             onSendMessage={handleSendMessage}
             disabled={isLoading}
+            chatId={currentChatId || chatId}
           />
         </div>
       </div>

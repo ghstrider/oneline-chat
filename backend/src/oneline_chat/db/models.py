@@ -203,3 +203,122 @@ class SharedChatResponse(BaseModel):
     view_count: int
     created_at: datetime
     messages: List[Dict[str, Any]]
+
+
+class AgentStatusEnum(str, Enum):
+    """Agent status enumeration."""
+    online = "online"
+    offline = "offline"
+    busy = "busy"
+    error = "error"
+
+
+class AgentTypeEnum(str, Enum):
+    """Agent type enumeration."""
+    system = "system"
+    custom = "custom"
+    specialized = "specialized"
+
+
+class AgentProviderEnum(str, Enum):
+    """Agent provider enumeration."""
+    openai = "openai"
+    anthropic = "anthropic"
+    ollama = "ollama"
+    gemini = "gemini"
+    custom = "custom"
+
+
+class Agent(SQLModel, table=True):
+    """Agent configuration model."""
+    
+    __tablename__ = "agents"
+    
+    id: str = Field(primary_key=True, description="Unique agent identifier")
+    name: str = Field(nullable=False, description="Agent display name")
+    type: AgentTypeEnum = Field(nullable=False, description="Agent type")
+    provider: AgentProviderEnum = Field(nullable=False, description="AI provider")
+    model: str = Field(nullable=False, description="Model name/identifier")
+    description: Optional[str] = Field(default=None, max_length=500, description="Agent description")
+    capabilities: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSON),
+        description="List of agent capabilities"
+    )
+    base_url: Optional[str] = Field(default=None, description="Base URL for custom agents")
+    system_prompt: Optional[str] = Field(default=None, description="System prompt for the agent")
+    parameters: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON),
+        description="Agent-specific parameters"
+    )
+    avatar_url: Optional[str] = Field(default=None, description="Avatar URL or emoji")
+    max_tokens: int = Field(default=4096, description="Maximum tokens for response")
+    temperature: float = Field(default=0.7, description="Temperature setting")
+    status: AgentStatusEnum = Field(default=AgentStatusEnum.offline, description="Current agent status")
+    last_health_check: Optional[datetime] = Field(default=None, description="Last health check timestamp")
+    response_time_ms: Optional[int] = Field(default=None, description="Average response time in milliseconds")
+    is_active: bool = Field(default=True, description="Whether agent is active")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ChatSession(SQLModel, table=True):
+    """Extended chat session model for multi-agent support."""
+    
+    __tablename__ = "chat_sessions"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    chat_id: str = Field(unique=True, nullable=False, description="Unique chat identifier")
+    user_id: Optional[str] = Field(default=None, description="User ID")
+    active_agent_id: Optional[str] = Field(default=None, description="Currently active agent")
+    agent_history: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSON),
+        description="List of agents used in this session"
+    )
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentMessage(SQLModel, table=True):
+    """Message with agent attribution."""
+    
+    __tablename__ = "agent_messages"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_id: str = Field(unique=True, nullable=False, description="Unique message identifier")
+    chat_id: str = Field(nullable=False, description="Chat session identifier")
+    agent_id: Optional[str] = Field(default=None, description="Agent that generated this message")
+    role: str = Field(nullable=False, description="Message role (user/assistant/system)")
+    content: str = Field(nullable=False, description="Message content")
+    message_metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON),
+        description="Additional metadata"
+    )
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentResponse(BaseModel):
+    """Response model for agent information."""
+    
+    id: str
+    name: str
+    type: str
+    provider: str
+    model: str
+    description: Optional[str]
+    capabilities: List[str]
+    avatar_url: Optional[str]
+    status: str
+    last_health_check: Optional[datetime]
+    response_time_ms: Optional[int]
+
+
+class AgentListResponse(BaseModel):
+    """Response model for list of agents."""
+    
+    agents: List[AgentResponse]
+    total: int
+    online_count: int

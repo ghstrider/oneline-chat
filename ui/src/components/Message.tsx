@@ -1,11 +1,32 @@
 import { ChatMessage } from '../types/chat'
 
 interface MessageProps {
-  message: ChatMessage
+  message: ChatMessage & {
+    agentName?: string
+    agentAvatar?: string
+    agentModel?: string
+  }
 }
 
 const Message = ({ message }: MessageProps) => {
   const isUser = message.role === 'user'
+
+  const getAgentDisplay = () => {
+    if (message.agentName) {
+      return {
+        name: message.agentName,
+        avatar: message.agentAvatar || '🤖',
+        model: message.agentModel
+      }
+    }
+    return {
+      name: 'Assistant',
+      avatar: '🤖',
+      model: undefined
+    }
+  }
+
+  const agentDisplay = getAgentDisplay()
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
@@ -18,8 +39,20 @@ const Message = ({ message }: MessageProps) => {
           }
         `}
       >
-        <div className="text-sm font-semibold mb-1">
-          {isUser ? 'You' : 'Assistant'}
+        <div className="flex items-center space-x-2 text-sm font-semibold mb-1">
+          {isUser ? (
+            <span>You</span>
+          ) : (
+            <>
+              <span className="text-lg">{agentDisplay.avatar}</span>
+              <span>{agentDisplay.name}</span>
+              {agentDisplay.model && (
+                <span className="text-xs opacity-70 font-normal">
+                  • {agentDisplay.model}
+                </span>
+              )}
+            </>
+          )}
         </div>
         <div className="whitespace-pre-wrap break-words">
           {message.content}

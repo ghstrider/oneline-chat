@@ -25,6 +25,11 @@ class DatabaseSettings(BaseSettings):
         return f"postgresql://{self.user}@{self.host}:{self.port}/{self.name}"
     
     @property
+    def database_url(self) -> str:
+        """Alias for url property (used in migration scripts)."""
+        return self.url
+    
+    @property
     def test_url(self) -> str:
         """Get test database URL."""
         if self.password:
@@ -39,6 +44,9 @@ class AISettings(BaseSettings):
     
     # OpenAI settings
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
+    
+    # Anthropic settings
+    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
     
     # Ollama settings
     ollama_base_url: str = Field(default="http://localhost:11434/v1", env="OLLAMA_BASE_URL")
@@ -92,6 +100,11 @@ class Settings(BaseSettings):
     app: AppSettings = AppSettings()
     database: DatabaseSettings = DatabaseSettings()
     ai: AISettings = AISettings()
+    
+    @property
+    def db(self):
+        """Alias for database settings."""
+        return self.database
     
     class Config:
         env_file = ".env"

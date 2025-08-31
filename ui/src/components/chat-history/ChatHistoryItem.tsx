@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useChatHistory } from '../../contexts/ChatHistoryContext';
 import { ChatSummary } from '../../types/chat-history';
 
@@ -9,6 +10,7 @@ interface ChatHistoryItemProps {
 
 export const ChatHistoryItem: React.FC<ChatHistoryItemProps> = ({ chat, isActive }) => {
   const { loadChat, deleteChat, updateChatTitle } = useChatHistory();
+  const navigate = useNavigate();
   const [showMenu, setShowMenu] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(chat.chat_title || '');
@@ -16,6 +18,8 @@ export const ChatHistoryItem: React.FC<ChatHistoryItemProps> = ({ chat, isActive
 
   const handleClick = () => {
     if (!isEditing) {
+      // Update URL and load chat
+      navigate(`/chat/${chat.chat_id}`);
       loadChat(chat.chat_id);
     }
   };

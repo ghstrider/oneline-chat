@@ -12,13 +12,15 @@ import asyncio
 import uuid
 import time
 import secrets
+import httpx
 from sqlmodel import Session
 
 from ..db import get_session, PersistenceRepository, ModeEnum
-from ..services import client, get_default_model, get_ai_provider
+from ..services import get_default_model
+from ..services.agent_registry import agent_registry
 from ..core.logging import get_logger
 from .auth_router import get_optional_user
-from ..db.models import User, ChatSummary, ChatHistoryResponse, ShareSettings, ShareResponse, SharedChatResponse
+from ..db.models import User, ChatSummary, ChatHistoryResponse, ShareSettings, ShareResponse, SharedChatResponse, ChatSession
 from ..core.anonymous_session import get_user_identifier
 
 logger = get_logger(__name__)
@@ -50,6 +52,7 @@ class ChatCompletionRequest(BaseModel):
     # Custom fields for our system
     chat_id: Optional[str] = Field(default=None, description="Chat session ID for persistence")
     save_to_db: Optional[bool] = Field(default=True, description="Whether to save to database")
+    agent_id: Optional[str] = Field(default=None, description="Specific agent to use for this request")
 
 
 class ChatCompletionChoice(BaseModel):
@@ -104,66 +107,150 @@ async def generate_streaming_response(
     full_response = ""
     error_occurred = False
     
+    # Determine which agent to use
+    agent = None
+    if request.agent_id:
+        agent = agent_registry.get_agent(request.agent_id)
+        if not agent:
+            error_chunk = {
+                "error": {
+                    "message": f"Agent {request.agent_id} not found",
+                    "type": "agent_error",
+                    "code": "agent_not_found"
+                }
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+    else:
+        # Try to get agent from chat session or use default
+        if request.chat_id:
+            try:
+                from sqlmodel import select
+                statement = select(ChatSession).where(ChatSession.chat_id == request.chat_id)
+                result = session.exec(statement)
+                chat_session = result.first()
+                if chat_session and chat_session.active_agent_id:
+                    agent = agent_registry.get_agent(chat_session.active_agent_id)
+            except:
+                pass
+        
+        if not agent:
+            agent = agent_registry.get_default_agent()
+    
+    if not agent:
+        error_chunk = {
+            "error": {
+                "message": "No agents available",
+                "type": "agent_error",
+                "code": "no_agents"
+            }
+        }
+        yield f"data: {json.dumps(error_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+    
     # Log AI provider being used
-    logger.info(f"Using AI provider: {get_ai_provider()}, Model: {request.model}")
+    logger.info(f"Using agent: {agent.name} ({agent.id}), Provider: {agent.provider}, Model: {agent.model}")
     
     try:
-        # Create OpenAI streaming request
-        stream = await client.chat.completions.create(
-            model=request.model,
-            messages=[msg.model_dump() for msg in request.messages],
-            temperature=request.temperature,
-            top_p=request.top_p,
-            n=request.n,
-            stream=True,
-            stop=request.stop,
-            max_tokens=request.max_tokens,
-            presence_penalty=request.presence_penalty,
-            frequency_penalty=request.frequency_penalty,
-            logit_bias=request.logit_bias,
-            user=request.user
-        )
-        
-        # Stream chunks
-        async for chunk in stream:
-            try:
-                # Convert OpenAI chunk to our format
-                chunk_data = ChatCompletionChunk(
-                    id=completion_id,
-                    object="chat.completion.chunk",
-                    created=created_timestamp,
-                    model=request.model,
-                    choices=[
-                        ChatCompletionChunkChoice(
-                            index=choice.index,
-                            delta=choice.delta.model_dump() if choice.delta else {},
-                            finish_reason=choice.finish_reason
-                        )
-                        for choice in chunk.choices
-                    ],
-                    system_fingerprint=chunk.system_fingerprint
-                )
-                
-                # Accumulate response for database storage
-                if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
-                    full_response += chunk.choices[0].delta.content
-                
-                # Send SSE formatted data
-                yield f"data: {chunk_data.model_dump_json()}\n\n"
-                
-            except Exception as chunk_error:
-                # Error processing individual chunk
-                error_chunk = {
-                    "error": {
-                        "message": f"Chunk processing error: {str(chunk_error)}",
-                        "type": "chunk_processing_error",
-                        "code": "chunk_error"
-                    }
+        # Route request to agent API endpoint
+        if not agent.base_url:
+            error_chunk = {
+                "error": {
+                    "message": f"Agent {agent.id} has no API endpoint configured",
+                    "type": "agent_error",
+                    "code": "no_api_endpoint"
                 }
-                yield f"data: {json.dumps(error_chunk)}\n\n"
-                error_occurred = True
-                break
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         
+        # Prepare request for agent API
+        user_messages = [msg for msg in request.messages if msg.role == "user"]
+        if not user_messages:
+            error_chunk = {
+                "error": {
+                    "message": "No user message found",
+                    "type": "request_error", 
+                    "code": "no_user_message"
+                }
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        
+        query = user_messages[-1].content
+        history = []
+        
+        # Build conversation history for agent
+        for msg in request.messages[:-1]:
+            history.append({
+                "role": msg.role,
+                "content": msg.content
+            })
+        
+        agent_payload = {
+            "query": query,
+            "history": history,
+            "stream": True,
+            "temperature": request.temperature or agent.temperature,
+            "max_tokens": request.max_tokens or agent.max_tokens,
+        }
+        
+        # Stream from agent API
+        import httpx
+        try:
+            async with httpx.AsyncClient() as http_client:
+                async with http_client.stream(
+                    "POST",
+                    f"{agent.base_url}/query",
+                    json=agent_payload,
+                    timeout=httpx.Timeout(60.0)
+                ) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if line:
+                            # Forward agent response as SSE
+                            if line.startswith('data: '):
+                                yield line + '\n\n'
+                            else:
+                                # Convert non-SSE response to SSE format
+                                chunk_data = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk", 
+                                    "created": created_timestamp,
+                                    "model": agent.model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": line},
+                                        "finish_reason": None
+                                    }]
+                                }
+                                yield f"data: {json.dumps(chunk_data)}\n\n"
+                                full_response += line
+        except httpx.HTTPError as e:
+            error_chunk = {
+                "error": {
+                    "message": f"Agent API error: {str(e)}",
+                    "type": "agent_api_error",
+                    "code": "http_error"
+                }
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            error_occurred = True
+        except Exception as e:
+            error_chunk = {
+                "error": {
+                    "message": f"Unexpected error: {str(e)}",
+                    "type": "internal_error", 
+                    "code": "unexpected_error"
+                }
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n"
+            error_occurred = True
         # Save to database if requested and no errors occurred
         if request.save_to_db and request.chat_id and not error_occurred:
             try:
@@ -252,23 +339,94 @@ async def create_chat_completion(
     else:
         # Non-streaming response
         try:
-            # Log AI provider being used
-            logger.info(f"Using AI provider: {get_ai_provider()}, Model: {request.model}")
+            # Determine which agent to use
+            agent = None
+            if request.agent_id:
+                agent = agent_registry.get_agent(request.agent_id)
+                if not agent:
+                    raise HTTPException(status_code=404, detail=f"Agent {request.agent_id} not found")
+            else:
+                # Try to get agent from chat session or use default
+                if request.chat_id:
+                    try:
+                        from sqlmodel import select
+                        statement = select(ChatSession).where(ChatSession.chat_id == request.chat_id)
+                        result = session.exec(statement)
+                        chat_session = result.first()
+                        if chat_session and chat_session.active_agent_id:
+                            agent = agent_registry.get_agent(chat_session.active_agent_id)
+                    except:
+                        pass
+                
+                if not agent:
+                    agent = agent_registry.get_default_agent()
             
-            completion = await client.chat.completions.create(
-                model=request.model,
-                messages=[msg.model_dump() for msg in request.messages],
-                temperature=request.temperature,
-                top_p=request.top_p,
-                n=request.n,
-                stream=False,
-                stop=request.stop,
-                max_tokens=request.max_tokens,
-                presence_penalty=request.presence_penalty,
-                frequency_penalty=request.frequency_penalty,
-                logit_bias=request.logit_bias,
-                user=request.user
-            )
+            if not agent:
+                raise HTTPException(status_code=503, detail="No agents available")
+            
+            # Log AI provider being used
+            logger.info(f"Using agent: {agent.name} ({agent.id}), Provider: {agent.provider}, Model: {agent.model}")
+            
+            # Check if agent has a base_url for REST API communication
+            if not agent.base_url:
+                raise HTTPException(status_code=503, detail=f"Agent {agent.id} does not have a base_url configured for REST API communication")
+            
+            # Prepare agent payload
+            agent_payload = {
+                "query": request.messages[-1].content if request.messages else "",
+                "history": [{"role": msg.role, "content": msg.content} for msg in request.messages[:-1]],
+                "stream": False,
+                "temperature": request.temperature or agent.temperature,
+                "max_tokens": request.max_tokens or agent.max_tokens,
+            }
+            
+            # Add optional parameters if provided
+            if request.top_p is not None:
+                agent_payload["top_p"] = request.top_p
+            if request.stop is not None:
+                agent_payload["stop"] = request.stop
+            if request.presence_penalty is not None:
+                agent_payload["presence_penalty"] = request.presence_penalty
+            if request.frequency_penalty is not None:
+                agent_payload["frequency_penalty"] = request.frequency_penalty
+            
+            # Call agent REST API
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.post(
+                    f"{agent.base_url}/query",
+                    json=agent_payload,
+                    timeout=httpx.Timeout(60.0)
+                )
+                
+                if response.status_code != 200:
+                    raise HTTPException(status_code=502, detail=f"Agent API error: {response.text}")
+                
+                agent_response = response.json()
+                
+                # Extract response content from agent
+                if "response" in agent_response:
+                    response_content = agent_response["response"]
+                elif "content" in agent_response:
+                    response_content = agent_response["content"]
+                else:
+                    response_content = str(agent_response)
+                
+                # Create completion-like response for compatibility
+                import time
+                completion_id = f"agent-{agent.id}-{int(time.time())}"
+                completion = type('Completion', (), {
+                    'id': completion_id,
+                    'created': int(time.time()),
+                    'model': agent.model,
+                    'choices': [type('Choice', (), {
+                        'index': 0,
+                        'message': type('Message', (), {
+                            'role': 'assistant',
+                            'content': response_content
+                        })(),
+                        'finish_reason': 'stop'
+                    })()]
+                })()
             
             # Save to database if requested
             if request.save_to_db and request.chat_id:

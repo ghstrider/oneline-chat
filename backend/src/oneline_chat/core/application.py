@@ -98,6 +98,13 @@ class Application:
     
     async def _on_startup(self):
         """Execute startup tasks."""
+        # Initialize agent registry
+        try:
+            from ..api.agent_router import initialize_agents
+            await initialize_agents()
+        except Exception as e:
+            self.logger.error(f"Failed to initialize agents: {e}")
+        
         self.logger.info(f"Server ready on {self.settings.app.host}:{self.settings.app.port}")
     
     async def _on_shutdown(self):
@@ -133,10 +140,12 @@ class Application:
         """Register all application routes."""
         from ..api import chat_router
         from ..api.auth_router import router as auth_router
+        from ..api.agent_router import router as agent_router
         
         # Include routers
         app.include_router(auth_router)
         app.include_router(chat_router)
+        app.include_router(agent_router)
         
         # Root endpoint
         @app.get("/")
@@ -158,6 +167,13 @@ class Application:
                         "stream": "/api/v1/chat/stream",
                         "history": "/api/v1/chat/history/{chat_id}",
                         "models": "/api/v1/models"
+                    },
+                    "agents": {
+                        "list": "/api/agents",
+                        "details": "/api/agents/{agent_id}",
+                        "status": "/api/agents/{agent_id}/status",
+                        "select": "/api/agents/{agent_id}/select",
+                        "default": "/api/agents/default"
                     }
                 }
             }
